@@ -116,7 +116,7 @@ func main() {
 	var fileMapMutex sync.Mutex // Mutex for synchronizing access to fileMap
 
 	fileChan := make(chan string, 100) // Channel for file paths
-	var wg sync.WaitGroup                // WaitGroup to wait for all workers to finish
+	var wg sync.WaitGroup              // WaitGroup to wait for all workers to finish
 
 	// Start worker goroutines
 	for i := 0; i < numWorkers; i++ {
@@ -207,7 +207,7 @@ func worker(fileChan <-chan string, audioExtensions map[string]bool, fileMap map
 			continue
 		}
 
-		size := info.Size() // Get file size
+		size := info.Size()     // Get file size
 		hash, err := fileHash(path) // Compute the MD5 hash
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error hashing %s: %v\n", path, err)
@@ -236,24 +236,29 @@ func worker(fileChan <-chan string, audioExtensions map[string]bool, fileMap map
 	fileMapMutex.Lock()
 	defer fileMapMutex.Unlock()
 
-	hashes := make([]string, 0, len(fileMap))
-	for hash := range fileMap {
-		hashes = append(hashes, hash)
+	// Collect all unique files into a slice for comparison
+	var uniqueFiles []*FileInfo
+	for _, fileInfo := range fileMap {
+		uniqueFiles = append(uniqueFiles, fileInfo)
 	}
 
-	// Compare files for additional duplicates
-	for i := 0; i < len(hashes); i++ {
-		fileA := fileMap[hashes[i]]
-		for j := i + 1; j < len(hashes); j++ {
-			fileB := fileMap[hashes[j]]
+	// Compare unique files for additional duplicates
+	for i := 0; i < len(uniqueFiles); i++ {
+		fileA := uniqueFiles[i]
+		for j := i + 1; j < len(uniqueFiles); j++ {
+			fileB := uniqueFiles[j]
 			if fileA.Size == fileB.Size {
 				// Check for filename similarity
 				similarity := compareFilenames(filepath.Base(fileA.Path), filepath.Base(fileB.Path))
 				if similarity >= 0.5 {
-					// Add fileB as a child of fileA
+					// Merge duplicates from fileB into fileA
 					fileA.Children = append(fileA.Children, fileB)
-					delete(fileMap, hashes[j]) // Remove duplicate from map
-					hashes = append(hashes[:j], hashes[j+1:]...) // Remove from the slice
+					if len(fileB.Children) > 0 {
+						fileA.Children = append(fileA.Children, fileB.Children...)
+					}
+					// Remove fileB from fileMap and uniqueFiles
+					delete(fileMap, fileB.Hash)
+					uniqueFiles = append(uniqueFiles[:j], uniqueFiles[j+1:]...)
 					j-- // Adjust index due to removal
 				}
 			}
@@ -396,6 +401,13 @@ func deleteFiles(output []*FileInfo) error {
 			err = os.RemoveAll(fileInfo.Path)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error deleting file %s: %v\n", fileInfo.Path, err)
+			}
+			// Delete duplicates as well
+			for _, child := range fileInfo.Children {
+				err = os.RemoveAll(child.Path)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error deleting file %s: %v\n", child.Path, err)
+				}
 			}
 		}
 		log("All files deleted.")
