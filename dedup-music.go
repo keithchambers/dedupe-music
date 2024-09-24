@@ -18,36 +18,41 @@ import (
 	"golang.org/x/sys/unix" // For Unix-specific system calls
 )
 
+// DirList is a custom type for a list of directories.
 type DirList []string
 
+// String converts DirList to a comma-separated string.
 func (d *DirList) String() string {
 	return strings.Join(*d, ", ")
 }
 
+// Set appends a new directory to DirList.
 func (d *DirList) Set(value string) error {
 	*d = append(*d, value)
 	return nil
 }
 
+// FileInfo holds information about a file, including its path, hash, size, and duplicates.
 type FileInfo struct {
-	Path     string     `json:"path"`               // File path
-	Hash     string     `json:"hash,omitempty"`     // MD5 hash
-	Size     int64      `json:"size"`               // File size
-	Children []*FileInfo `json:"duplicates,omitempty"` // Duplicate files
+	Path     string      `json:"path"`               // File path
+	Hash     string      `json:"hash,omitempty"`     // MD5 hash
+	Size     int64       `json:"size"`               // File size in bytes
+	Children []*FileInfo `json:"duplicates,omitempty"` // Duplicates as children
 }
 
 var (
-	dirFlags    DirList
-	helpFlag    bool
-	outputFile  string
-	copyDir     string
-	minSizeMB   int64
-	logEnabled  bool
-	deleteAll   bool // Flag to delete all files in JSON
-	deleteDupes bool // Flag to delete only duplicate files
-	numWorkers  = runtime.NumCPU()
+	dirFlags    DirList // Directories to scan
+	helpFlag    bool    // Help flag
+	outputFile  string  // Output JSON file name
+	copyDir     string  // Directory to copy unique files to
+	minSizeMB   int64   // Minimum file size in MB
+	logEnabled  bool    // Enable logging to the console
+	deleteAll   bool    // Flag to delete all files in JSON
+	deleteDupes bool    // Flag to delete only duplicate files
+	numWorkers  = runtime.NumCPU() // Number of worker goroutines to use
 )
 
+// init initializes command-line flags.
 func init() {
 	flag.Var(&dirFlags, "d", "Directory to scan (can be used multiple times)")
 	flag.BoolVar(&helpFlag, "h", false, "Show help")
@@ -59,15 +64,18 @@ func init() {
 	flag.BoolVar(&deleteDupes, "delete-duplicates", false, "Delete only duplicate files listed in the JSON")
 }
 
+// log prints a message to the console if logging is enabled.
 func log(msg string, args ...interface{}) {
 	if logEnabled {
 		fmt.Printf(msg+"\n", args...)
 	}
 }
 
+// main is the entry point of the program.
 func main() {
-	flag.Parse()
+	flag.Parse() // Parse command-line flags
 
+	// Display help if requested or no directories are specified
 	if helpFlag || len(dirFlags) == 0 {
 		flag.Usage()
 		return
@@ -75,11 +83,13 @@ func main() {
 
 	log("Starting dedupe-music program")
 
+	// Set default output file name if not provided
 	if outputFile == "" {
 		timestamp := time.Now().Format("01-02-2006_15-04-05")
 		outputFile = fmt.Sprintf("dedupe-music_%s.json", timestamp)
 	}
 
+	// Create the output directory if specified
 	if copyDir != "" {
 		err := os.MkdirAll(copyDir, os.ModePerm)
 		if err != nil {
@@ -89,8 +99,10 @@ func main() {
 		log("Output directory created or exists: %s", copyDir)
 	}
 
+	// Convert minimum size from MB to bytes
 	minSizeBytes := minSizeMB * 1024 * 1024
 
+	// Supported audio file extensions
 	audioExtensions := map[string]bool{
 		".wav":  true,
 		".aif":  true,
@@ -99,36 +111,37 @@ func main() {
 		".mp4":  true,
 	}
 
+	// Map to hold file hashes and their information
 	fileMap := make(map[string]*FileInfo)
-	var fileMapMutex sync.Mutex
+	var fileMapMutex sync.Mutex // Mutex for synchronizing access to fileMap
 
-	fileChan := make(chan string, 100)
-	var wg sync.WaitGroup
+	fileChan := make(chan string, 100) // Channel for file paths
+	var wg sync.WaitGroup                // WaitGroup to wait for all workers to finish
 
+	// Start worker goroutines
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go worker(fileChan, audioExtensions, fileMap, &fileMapMutex, &wg)
 	}
 
+	// Walk through each directory provided via the -d flag
 	for _, dir := range dirFlags {
 		log("Scanning directory: %s", dir)
 		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				if errors.Is(err, os.ErrPermission) {
-					return nil
+					return nil // Skip permission errors
 				}
 				fmt.Fprintf(os.Stderr, "Error accessing %s: %v\n", path, err)
 				return nil
 			}
 
-			if !info.Mode().IsRegular() {
+			// Skip non-regular files and files smaller than the minimum size
+			if !info.Mode().IsRegular() || info.Size() < minSizeBytes {
 				return nil
 			}
 
-			if info.Size() < minSizeBytes {
-				return nil
-			}
-
+			// Check if the file has a supported audio extension
 			ext := strings.ToLower(filepath.Ext(info.Name()))
 			if audioExtensions[ext] {
 				fileChan <- path // Send file path to channel for processing
@@ -147,7 +160,7 @@ func main() {
 
 	// Prepare the output data and handle file copying
 	for _, fileInfo := range fileMap {
-		output = append(output, fileInfo)
+		output = append(output, fileInfo) // Add unique file to output
 		if copyDir != "" {
 			log("Copying file: %s", fileInfo.Path)
 			err := copyFile(fileInfo.Path, copyDir, fileInfo)
@@ -209,10 +222,11 @@ func worker(fileChan <-chan string, audioExtensions map[string]bool, fileMap map
 
 		// Lock the mutex to update the shared fileMap
 		fileMapMutex.Lock()
-		existingFile, exists := fileMap[hash]
-		if exists {
-			fileMap[hash].Children = append(existingFile.Children, fileInfo)
+		if existingFile, exists := fileMap[hash]; exists {
+			// If the file already exists, append it as a duplicate of the unique file
+			existingFile.Children = append(existingFile.Children, fileInfo)
 		} else {
+			// Otherwise, add it as a new unique entry
 			fileMap[hash] = fileInfo
 		}
 		fileMapMutex.Unlock()
@@ -236,6 +250,7 @@ func worker(fileChan <-chan string, audioExtensions map[string]bool, fileMap map
 				// Check for filename similarity
 				similarity := compareFilenames(filepath.Base(fileA.Path), filepath.Base(fileB.Path))
 				if similarity >= 0.5 {
+					// Add fileB as a child of fileA
 					fileA.Children = append(fileA.Children, fileB)
 					delete(fileMap, hashes[j]) // Remove duplicate from map
 					hashes = append(hashes[:j], hashes[j+1:]...) // Remove from the slice
