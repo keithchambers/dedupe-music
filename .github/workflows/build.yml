@@ -1,4 +1,4 @@
-name: build
+name: Build Job
 on:
   push:
     branches:
@@ -27,4 +27,6 @@ jobs:
         run: curl -sL https://git.io/goreleaser | bash
         
       - name: Run Goreleaser
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: goreleaser release --snapshot --rm-dist
