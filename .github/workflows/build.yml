@@ -1,4 +1,4 @@
-name: Build and Release for MacOS
+name: Build for MacOS
 
 on:
   push:
@@ -8,12 +8,13 @@ on:
     branches:
       - main  # or your default branch name
   release:
-    types: [created]  # This triggers when a new release is created
-
+    types: [created]
+    
 jobs:
   build:
     name: Build
     runs-on: macos-latest
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
@@ -21,25 +22,13 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v4
       with:
-        go-version: '1.23'  # Updated to use Go 1.23
+        go-version: '1.23'
 
     - name: Build
       run: go build -v -o dedupe-music ./dedup-music.go
 
-    - name: Upload Artifact (for non-release events)
-      if: github.event_name != 'release'
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: dedupe-music_macos
         path: dedupe-music
-
-    - name: Upload Release Asset (for release events)
-      if: github.event_name == 'release'
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./dedupe-music
-        asset_name: dedupe-music
-        asset_content_type: application/octet-stream
