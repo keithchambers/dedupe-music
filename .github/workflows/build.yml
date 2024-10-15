@@ -8,12 +8,7 @@ on:
     branches:
       - main  # or your default branch name
   release:
-    types: [created]
-
-# Add this permissions block
-permissions:
-  contents: write
-  releases: write
+    types: [created]  # This triggers when a new release is created
 
 jobs:
   build:
@@ -33,13 +28,13 @@ jobs:
       run: go build -v -o dedupe-music ./dedup-music.go
 
     - name: Upload Artifact (for non-release events)
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: github.event_name != 'release'
       with:
         name: dedupe-music_macos
         path: dedupe-music
 
-    - name: Upload Release Asset
+    - name: Upload Release Asset (for release events)
       uses: actions/upload-release-asset@v1
       if: github.event_name == 'release'
       env:
