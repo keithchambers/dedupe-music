@@ -1,4 +1,4 @@
-name: Build for MacOS
+name: Build and Release for MacOS
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
       - main  # or your default branch name
   release:
     types: [created]
-    
+
 jobs:
   build:
     name: Build
@@ -27,8 +27,20 @@ jobs:
     - name: Build
       run: go build -v -o dedupe-music ./dedup-music.go
 
-    - name: Upload Artifact
+    - name: Upload Artifact (for non-release events)
       uses: actions/upload-artifact@v3
+      if: github.event_name != 'release'
       with:
         name: dedupe-music_macos
         path: dedupe-music
+
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      if: github.event_name == 'release'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./dedupe-music
+        asset_name: dedupe-music_macos
+        asset_content_type: application/octet-stream
