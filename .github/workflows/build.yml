@@ -16,7 +16,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-    - name: Check out code
+    - name: Checkout code
       uses: actions/checkout@v3
 
     - name: Set up Go
@@ -27,20 +27,34 @@ jobs:
     - name: Build
       run: go build -v -o dedupe-music ./dedup-music.go
 
-    - name: Upload Artifact (for non-release events)
-      uses: actions/upload-artifact@v4
+    - name: Create Release
+      id: create_release
       if: github.event_name != 'release'
+      uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+          
+    - name: Upload Artifact (for non-release events)
+      id: upload-release-asset 
+      if: github.event_name != 'release'
+      uses: actions/upload-artifact@v4
       with:
         name: dedupe-music_macos
         path: dedupe-music
 
     - name: Upload Release Asset (for release events)
+      id: upload-release-asset
+      if: github.event_name != 'release'
       uses: actions/upload-release-asset@v1
-      if: github.event_name == 'release'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ github.event.release.upload_url }}
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./dedupe-music
-        asset_name: dedupe-music_macos
+        asset_name: dedupe-music
         asset_content_type: application/octet-stream
