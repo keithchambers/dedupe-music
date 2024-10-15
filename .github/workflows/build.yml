@@ -7,7 +7,9 @@ on:
   pull_request:
     branches:
       - main  # or your default branch name
-
+  release:
+    types: [created]
+    
 jobs:
   build:
     name: Build
