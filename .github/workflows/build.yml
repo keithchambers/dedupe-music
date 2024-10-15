@@ -22,4 +22,5 @@ jobs:
 
       - name: Build MacOS ARM64 binary
         run: |
+          go mod tidy
           GOOS=darwin GOARCH=arm64 go build -o dedupe-music
