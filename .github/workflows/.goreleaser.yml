@@ -1,8 +1,0 @@
-builds:
-  - id: dedupe
-    binary: dedupe-music
-    goos:
-      - darwin
-    goarch:
-      - arm64
-    main: ./dedup-music.go
