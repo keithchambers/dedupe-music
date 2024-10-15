@@ -1,32 +1,32 @@
-name: Build Job
+name: Build for MacOS
+
 on:
   push:
     branches:
-      - main
-      
+      - main  # or your default branch name
   pull_request:
     branches:
-      - main
+      - main  # or your default branch name
 
 jobs:
   build:
+    name: Build
     runs-on: macos-latest
-    
+
     steps:
-      - uses: actions/checkout@v2
-      
-      - name: Set up Go
-        uses: actions/setup-go@v3
-        with:
-          go-version: '1.23'
-          
-      - name: Build MacOS ARM64 binary
-        run: GOOS=darwin GOARCH=arm64 go build -o dedupe-music
-        
-      - name: Install Goreleaser
-        run: curl -sL https://git.io/goreleaser | bash
-        
-      - name: Run Goreleaser
-        run: goreleaser release --snapshot --rm-dist
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Check out code
+      uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.23'
+
+    - name: Build
+      run: go build -v -o dedupe-music ./dedup-music.go
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: dedupe-music_macos
+        path: dedupe-music
