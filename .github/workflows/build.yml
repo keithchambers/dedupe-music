@@ -1,5 +1,4 @@
-name: Build MacOS ARM binary
-
+name: build
 on:
   push:
     branches:
@@ -7,20 +6,14 @@ on:
   pull_request:
     branches:
       - main
-
 jobs:
   build:
     runs-on: macos-latest
-
     steps:
       - uses: actions/checkout@v2
-
       - name: Set up Go
         uses: actions/setup-go@v3
         with:
           go-version: '1.23'
-
       - name: Build MacOS ARM64 binary
-        run: |
-          go mod tidy
-          GOOS=darwin GOARCH=arm64 go build -o dedupe-music
+        run: GOOS=darwin GOARCH=arm64 go build -o dedupe-music
