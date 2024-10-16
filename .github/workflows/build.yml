@@ -8,7 +8,7 @@ on:
     branches:
       - main  # or your default branch name
   release:
-    types: [created]
+    types: [created]  # Ensure this is used for release creation
 
 jobs:
   build:
@@ -37,6 +37,7 @@ jobs:
     name: Upload Release Asset
     runs-on: macos-latest
     needs: build
+    if: github.event_name == 'release' && github.event.action == 'created'  # Ensures it runs only for release creation
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
@@ -44,7 +45,7 @@ jobs:
     - name: Upload to GitHub Release
       uses: actions/upload-release-asset@v1
       with:
-        upload_url: ${{ github.event.release.upload_url }}
+        upload_url: ${{ github.event.release.upload_url }}  # Fetch the upload_url for the release event
         asset_path: dedupe-music
         asset_name: dedupe-music_macos
         asset_content_type: application/octet-stream
