@@ -47,6 +47,7 @@ var (
     logEnabled        bool
     deleteSourceFiles bool
     numWorkers        = runtime.NumCPU()
+    consoleMutex      sync.Mutex
 )
 
 func init() {
@@ -228,7 +229,11 @@ func worker(fileChan <-chan string, fileExtensions map[string]bool, fileMap map[
     defer wg.Done()
 
     for path := range fileChan {
-        log("Processing file: %s", path)
+        if logEnabled {
+            consoleMutex.Lock()
+            fmt.Printf("Processing file: %s ...", path)
+            consoleMutex.Unlock()
+        }
 
         info, err := os.Stat(path)
         if err != nil {
@@ -253,13 +258,27 @@ func worker(fileChan <-chan string, fileExtensions map[string]bool, fileMap map[
 
         key := filename + "|" + hash
 
+        var isDuplicate bool
+
         fileMapMutex.Lock()
         if existingFile, exists := fileMap[key]; exists {
             existingFile.Children = append(existingFile.Children, fileInfo)
+            isDuplicate = true
         } else {
             fileMap[key] = fileInfo
+            isDuplicate = false
         }
         fileMapMutex.Unlock()
+
+        if logEnabled {
+            consoleMutex.Lock()
+            if isDuplicate {
+                fmt.Printf("\033[33mDUP\033[0m\n")
+            } else {
+                fmt.Printf("\033[32mOK\033[0m\n")
+            }
+            consoleMutex.Unlock()
+        }
     }
 }
 
