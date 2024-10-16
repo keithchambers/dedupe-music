@@ -86,16 +86,6 @@ func customUsage() {
     fmt.Fprintf(os.Stderr, "        Enable detailed logging to the console. (Optional, default: false)\n\n")
     fmt.Fprintf(os.Stderr, "  -h, -help\n")
     fmt.Fprintf(os.Stderr, "        Show this help message\n\n")
-    fmt.Fprintf(os.Stderr, "File Matching:\n")
-    fmt.Fprintf(os.Stderr, "  The program scans for and processes files with the following extensions:\n")
-    fmt.Fprintf(os.Stderr, "  .mp3, .wav, .aiff, .aif, .mp4\n")
-    fmt.Fprintf(os.Stderr, "  Files are considered duplicates if they have the same MD5 hash, regardless of their names.\n")
-    fmt.Fprintf(os.Stderr, "  Additionally, files with the same size and similar names (ignoring spaces, underscores, hyphens, and dots)\n")
-    fmt.Fprintf(os.Stderr, "  are considered potential duplicates and will be grouped together.\n\n")
-    fmt.Fprintf(os.Stderr, "Example usage:\n")
-    fmt.Fprintf(os.Stderr, "  dedupe-music -s \"$HOME/Music\" -s \"$HOME/Downloads/Music\" -t \"$HOME/deduped-files-dir\" -size 1 -l\n")
-    fmt.Fprintf(os.Stderr, "  This will scan the Music and Downloads/Music folders, copy unique files to deduped-files-dir, only check files 1 MB or larger, and show detailed logs.\n")
-    fmt.Fprintf(os.Stderr, "\n")
 }
 
 func main() {
