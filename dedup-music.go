@@ -33,8 +33,9 @@ func (d *DirList) Set(value string) error {
 
 // FileInfo holds information about a file, including its path, hash, size, and duplicates.
 type FileInfo struct {
+    Name     string      `json:"name"`
     Path     string      `json:"path"`
-    Hash     string      `json:"hash,omitempty"`
+    Hash     string      `json:"hash"`
     Size     int64       `json:"size"`
     Children []*FileInfo `json:"duplicates,omitempty"`
 }
@@ -52,8 +53,8 @@ func init() {
     flag.Var(&sourceDirs, "s", "Directory to scan for files to be deduped. Can be used multiple times. (Required)")
     flag.Var(&sourceDirs, "source-dir", "Directory to scan for files to be deduped. Can be used multiple times. (Required)")
 
-    flag.StringVar(&targetDir, "t", "", "Directory to copy unique files to. (Required)")
-    flag.StringVar(&targetDir, "target-dir", "", "Directory to copy unique files to. (Required)")
+    flag.StringVar(&targetDir, "t", "", "Directory to copy unique files to. (Optional)")
+    flag.StringVar(&targetDir, "target-dir", "", "Directory to copy unique files to. (Optional)")
 
     flag.Int64Var(&minSizeMB, "size", 10, "Minimum file size in megabytes (MB) to consider. (Optional, default: 10)")
 
@@ -74,7 +75,7 @@ func customUsage() {
     fmt.Fprintf(os.Stderr, "        Directory to scan for files to be deduped. Can be used multiple times. (Required)\n")
     fmt.Fprintf(os.Stderr, "        Example: -s \"$HOME/Music/\" -s \"$HOME/Downloads/\"\n\n")
     fmt.Fprintf(os.Stderr, "  -t, -target-dir string\n")
-    fmt.Fprintf(os.Stderr, "        Directory to copy unique files to. (Required)\n")
+    fmt.Fprintf(os.Stderr, "        Directory to copy unique files to. (Optional)\n")
     fmt.Fprintf(os.Stderr, "        Example: -t \"$HOME/deduped-files-dir\"\n\n")
     fmt.Fprintf(os.Stderr, "  -size value\n")
     fmt.Fprintf(os.Stderr, "        Minimum file size in megabytes (MB) to consider. (Optional, default: 10)\n")
@@ -96,8 +97,8 @@ func main() {
         os.Exit(0)
     }
 
-    if len(sourceDirs) == 0 || targetDir == "" {
-        fmt.Fprintf(os.Stderr, "Error: Both source (-s or -source-dir) and target (-t or -target-dir) directories are required.\n")
+    if len(sourceDirs) == 0 {
+        fmt.Fprintf(os.Stderr, "Error: Source (-s or -source-dir) directories are required.\n")
         flag.Usage()
         os.Exit(1)
     }
@@ -126,11 +127,13 @@ func run() error {
 
     outputFile := "dedupe-music.json"
 
-    err := os.MkdirAll(targetDir, os.ModePerm)
-    if err != nil {
-        return fmt.Errorf("error creating output directory %s: %v", targetDir, err)
+    if targetDir != "" {
+        err := os.MkdirAll(targetDir, os.ModePerm)
+        if err != nil {
+            return fmt.Errorf("error creating output directory %s: %v", targetDir, err)
+        }
+        log("Output directory created or exists: %s", targetDir)
     }
-    log("Output directory created or exists: %s", targetDir)
 
     minSizeBytes := minSizeMB * 1024 * 1024
 
@@ -185,12 +188,14 @@ func run() error {
 
     for _, fileInfo := range fileMap {
         output = append(output, fileInfo)
-        log("Copying file: %s", fileInfo.Path)
-        err := copyFile(fileInfo.Path, targetDir, fileInfo)
-        if err != nil {
-            return fmt.Errorf("error copying file %s: %v", fileInfo.Path, err)
+        if targetDir != "" {
+            log("Copying file: %s", fileInfo.Path)
+            err := copyFile(fileInfo.Path, targetDir, fileInfo)
+            if err != nil {
+                return fmt.Errorf("error copying file %s: %v", fileInfo.Path, err)
+            }
+            log("Successfully copied file: %s", fileInfo.Path)
         }
-        log("Successfully copied file: %s", fileInfo.Path)
     }
 
     if deleteSourceFiles {
@@ -204,7 +209,9 @@ func run() error {
     }
 
     fmt.Printf("Results written to %s\n", outputFile)
-    fmt.Printf("Files copied to %s\n", targetDir)
+    if targetDir != "" {
+        fmt.Printf("Files copied to %s\n", targetDir)
+    }
 
     return nil
 }
@@ -237,17 +244,21 @@ func worker(fileChan <-chan string, fileExtensions map[string]bool, fileMap map[
             continue
         }
 
+        filename := filepath.Base(path)
         fileInfo := &FileInfo{
+            Name: filename,
             Path: path,
             Hash: hash,
             Size: size,
         }
 
+        key := filename + "|" + hash
+
         fileMapMutex.Lock()
-        if existingFile, exists := fileMap[hash]; exists {
+        if existingFile, exists := fileMap[key]; exists {
             existingFile.Children = append(existingFile.Children, fileInfo)
         } else {
-            fileMap[hash] = fileInfo
+            fileMap[key] = fileInfo
         }
         fileMapMutex.Unlock()
     }
@@ -282,6 +293,10 @@ func writeJSONToFile(filename string, data []*FileInfo) error {
 }
 
 func copyFile(srcPath, destDir string, fileInfo *FileInfo) error {
+    if destDir == "" {
+        return nil
+    }
+
     srcFile, err := os.Open(srcPath)
     if err != nil {
         return err
