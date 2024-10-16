@@ -142,7 +142,6 @@ func run() error {
         ".aif":  true,
         ".aiff": true,
         ".mp3":  true,
-        ".mp4":  true,
     }
 
     fileMap := make(map[string]*FileInfo)
