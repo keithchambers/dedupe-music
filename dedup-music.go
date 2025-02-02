@@ -1,368 +1,199 @@
 package main
 
 import (
-	"bufio"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"flag"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"sync"
+	"testing"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
-// DirList is a custom type for a list of directories.
-type DirList []string
-
-func (d *DirList) String() string {
-	return strings.Join(*d, ", ")
-}
-
-func (d *DirList) Set(value string) error {
-	*d = append(*d, value)
-	return nil
-}
-
-// FileInfo holds information about a file, including its path, hash, size, and duplicates.
-type FileInfo struct {
-	Name     string      `json:"name"`
-	Path     string      `json:"path"`
-	Hash     string      `json:"hash"`
-	Size     int64       `json:"size"`
-	Children []*FileInfo `json:"duplicates,omitempty"`
-}
-
-var (
-	sourceDirs         DirList
-	targetDir          string
-	minSizeMB          int64
-	logEnabled         bool
-	deleteSourceFiles  bool
-	numWorkers         = runtime.NumCPU()
-)
-
-func init() {
-	flag.Var(&sourceDirs, "s", "Directory to scan for files to be deduped. Can be used multiple times. (Required)")
-	flag.Var(&sourceDirs, "source-dir", "Directory to scan for files to be deduped. Can be used multiple times. (Required)")
-	flag.StringVar(&targetDir, "t", "", "Directory to copy unique files to. (Optional)")
-	flag.StringVar(&targetDir, "target-dir", "", "Directory to copy unique files to. (Optional)")
-	flag.Int64Var(&minSizeMB, "size", 10, "Minimum file size in megabytes (MB) to consider. (Optional, default: 10)")
-	flag.BoolVar(&deleteSourceFiles, "delete-source-files", false, "Delete source files after processing. (Optional, default: false)")
-	flag.BoolVar(&logEnabled, "l", false, "Enable detailed logging to the console. (Optional, default: false)")
-	flag.BoolVar(&logEnabled, "logs", false, "Enable detailed logging to the console. (Optional, default: false)")
-	flag.Usage = customUsage
-}
-
-func customUsage() {
-	fmt.Fprintf(os.Stderr, "Dedupe Music: Find and manage duplicate files\n\n")
-	fmt.Fprintf(os.Stderr, "Usage:\n")
-	fmt.Fprintf(os.Stderr, "  dedupe-music [options]\n\n")
-	fmt.Fprintf(os.Stderr, "Options:\n")
-	fmt.Fprintf(os.Stderr, "  -s, -source-dir value\n")
-	fmt.Fprintf(os.Stderr, "      Directory to scan for files to be deduped. Can be used multiple times. (Required)\n")
-	fmt.Fprintf(os.Stderr, "      Example: -s \"$HOME/Music/\" -s \"$HOME/Downloads/\"\n\n")
-	fmt.Fprintf(os.Stderr, "  -t, -target-dir string\n")
-	fmt.Fprintf(os.Stderr, "      Directory to copy unique files to. (Optional)\n")
-	fmt.Fprintf(os.Stderr, "      Example: -t \"$HOME/deduped-files-dir\"\n\n")
-	fmt.Fprintf(os.Stderr, "  -size value\n")
-	fmt.Fprintf(os.Stderr, "      Minimum file size in megabytes (MB) to consider. (Optional, default: 10)\n")
-	fmt.Fprintf(os.Stderr, "      Example: -size 5\n\n")
-	fmt.Fprintf(os.Stderr, "  -delete-source-files\n")
-	fmt.Fprintf(os.Stderr, "      Delete source files after processing. (Optional, default: false)\n")
-	fmt.Fprintf(os.Stderr, "      WARNING: Use with caution! This will delete files!\n\n")
-	fmt.Fprintf(os.Stderr, "  -l, -logs\n")
-	fmt.Fprintf(os.Stderr, "      Enable detailed logging to the console. (Optional, default: false)\n\n")
-	fmt.Fprintf(os.Stderr, "  -h, -help\n")
-	fmt.Fprintf(os.Stderr, "      Show this help message\n\n")
-}
-
-func main() {
-	flag.Parse()
-	if len(os.Args) == 1 || containsHelpFlag() {
-		flag.Usage()
-		os.Exit(0)
-	}
-	if len(sourceDirs) == 0 {
-		fmt.Fprintf(os.Stderr, "Error: Source (-s or -source-dir) directories are required.\n")
-		flag.Usage()
-		os.Exit(1)
-	}
-	if deleteSourceFiles {
-		fmt.Print("Enter the word 'permanent' and hit enter to confirm: ")
-		reader := bufio.NewReader(os.Stdin)
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-		if input != "permanent" {
-			fmt.Fprintf(os.Stderr, "Error: Deletion not confirmed. Exiting.\n")
-			os.Exit(1)
-		}
-	}
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	os.Exit(0)
-}
-
-// containsHelpFlag checks for -h or -help in the command-line arguments.
-func containsHelpFlag() bool {
-	for _, arg := range os.Args[1:] {
-		if arg == "-h" || arg == "-help" || arg == "--help" {
-			return true
-		}
-	}
-	return false
-}
-
-func run() error {
-	logf("Starting dedupe-music program")
-	outputFile := "dedupe-music.json"
-
-	if targetDir != "" {
-		if err := os.MkdirAll(targetDir, os.ModePerm); err != nil {
-			return fmt.Errorf("error creating output directory %s: %v", targetDir, err)
-		}
-		logf("Output directory created or exists: %s", targetDir)
-	}
-
-	minSizeBytes := minSizeMB * 1024 * 1024
-	// Allowed audio file extensions.
-	allowedExts := map[string]bool{
-		".wav":  true,
-		".aif":  true,
-		".aiff": true,
-		".mp3":  true,
-	}
-
-	// Map to hold unique files based on a composite key.
-	fileMap := make(map[string]*FileInfo)
-	var fileMapMutex sync.Mutex
-	fileChan := make(chan string, 100)
-	var wg sync.WaitGroup
-
-	// Start worker pool.
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go worker(fileChan, &fileMap, &fileMapMutex, &wg)
-	}
-
-	// Walk through each source directory.
-	for _, dir := range sourceDirs {
-		logf("Scanning directory: %s", dir)
-		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				// Skip permission errors.
-				if errors.Is(err, os.ErrPermission) {
-					return nil
-				}
-				return fmt.Errorf("error accessing %s: %v", path, err)
-			}
-			// Only process regular files that meet the minimum size.
-			if !info.Mode().IsRegular() || info.Size() < minSizeBytes {
-				return nil
-			}
-			// Check if file extension is allowed.
-			ext := strings.ToLower(filepath.Ext(info.Name()))
-			if allowedExts[ext] {
-				fileChan <- path
-			}
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("error walking directory %s: %v", dir, err)
-		}
-	}
-
-	close(fileChan)
-	wg.Wait()
-
-	// Process the collected file information.
-	var output []*FileInfo
-	for _, fileInfo := range fileMap {
-		output = append(output, fileInfo)
-		if targetDir != "" {
-			logf("Copying file: %s", fileInfo.Path)
-			if err := copyFile(fileInfo.Path, targetDir, fileInfo); err != nil {
-				return fmt.Errorf("error copying file %s: %v", fileInfo.Path, err)
-			}
-			logf("Successfully copied file: %s", fileInfo.Path)
-		}
-	}
-
-	if deleteSourceFiles {
-		if err := deleteFiles(output); err != nil {
-			return fmt.Errorf("error deleting files: %v", err)
-		}
-	}
-
-	if err := writeJSONToFile(outputFile, output); err != nil {
-		return fmt.Errorf("error writing JSON to file: %v", err)
-	}
-
-	fmt.Printf("Results written to %s\n", outputFile)
-	if targetDir != "" {
-		fmt.Printf("Files copied to %s\n", targetDir)
-	}
-
-	return nil
-}
-
-// worker processes file paths from fileChan, computes their hash, and updates fileMap.
-func worker(fileChan <-chan string, fileMap *map[string]*FileInfo, fileMapMutex *sync.Mutex, wg *sync.WaitGroup) {
-	defer wg.Done()
-	for path := range fileChan {
-		logf("Processing file: %s", path)
-		info, err := os.Stat(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: Unable to stat file %s: %v\n", path, err)
-			continue
-		}
-		size := info.Size()
-		hash, err := fileHash(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: Unable to hash file %s: %v\n", path, err)
-			continue
-		}
-		filename := filepath.Base(path)
-		fileInfo := &FileInfo{
-			Name: filename,
-			Path: path,
-			Hash: hash,
-			Size: size,
-		}
-		// Generate a composite key based on filename and hash.
-		key := generateKey(filename, hash)
-		fileMapMutex.Lock()
-		if existingFile, exists := (*fileMap)[key]; exists {
-			existingFile.Children = append(existingFile.Children, fileInfo)
-		} else {
-			(*fileMap)[key] = fileInfo
-		}
-		fileMapMutex.Unlock()
+// TestGenerateKey verifies that generateKey produces the expected composite key.
+func TestGenerateKey(t *testing.T) {
+	key := generateKey("song.mp3", "abc123")
+	expected := "song.mp3|abc123"
+	if key != expected {
+		t.Errorf("generateKey() = %q, want %q", key, expected)
 	}
 }
 
-// generateKey creates a deduplication key from filename and hash.
-func generateKey(filename, hash string) string {
-	return filename + "|" + hash
-}
-
-// fileHash computes the MD5 hash of the file at the given path.
-func fileHash(path string) (string, error) {
-	file, err := os.Open(path)
+// TestFileHash creates a temporary file with known content and verifies the computed MD5 hash.
+func TestFileHash(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "testfile")
 	if err != nil {
-		return "", err
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	content := []byte("hello world")
+	if _, err := tmpFile.Write(content); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	hash, err := fileHash(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("fileHash() error: %v", err)
+	}
+	// Expected MD5 of "hello world"
+	expected := "5eb63bbbe01eeed093cb22bb8f5acdc3"
+	if hash != expected {
+		t.Errorf("fileHash() = %q, want %q", hash, expected)
+	}
+}
+
+// TestWriteJSONToFile writes a JSON file and then decodes it to verify the output.
+func TestWriteJSONToFile(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "testjson*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	filename := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(filename)
+
+	data := []*FileInfo{
+		{
+			Name: "song.mp3",
+			Path: "/path/to/song.mp3",
+			Hash: "abc123",
+			Size: 12345,
+			Children: []*FileInfo{
+				{Name: "song (1).mp3", Path: "/path/to/song (1).mp3", Hash: "abc123", Size: 12345},
+			},
+		},
+	}
+	if err := writeJSONToFile(filename, data); err != nil {
+		t.Fatalf("writeJSONToFile() error: %v", err)
+	}
+
+	file, err := os.Open(filename)
+	if err != nil {
+		t.Fatalf("Failed to open written JSON file: %v", err)
 	}
 	defer file.Close()
-	hasher := md5.New()
-	if _, err := io.Copy(hasher, file); err != nil {
-		return "", err
+
+	var decoded []*FileInfo
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&decoded); err != nil {
+		t.Fatalf("Failed to decode JSON: %v", err)
 	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+
+	if len(decoded) != 1 || decoded[0].Name != "song.mp3" {
+		t.Errorf("Decoded JSON does not match expected output: %+v", decoded)
+	}
 }
 
-// writeJSONToFile encodes the data to JSON and writes it to the specified file.
-func writeJSONToFile(filename string, data []*FileInfo) error {
-	file, err := os.Create(filename)
+// TestCopyFile creates a temporary source file and target directory, then verifies the file is copied correctly.
+func TestCopyFile(t *testing.T) {
+	// Create temporary source file.
+	srcFile, err := os.CreateTemp("", "srcfile*.txt")
 	if err != nil {
-		return err
+		t.Fatalf("Failed to create temp source file: %v", err)
 	}
-	defer file.Close()
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", " ")
-	return encoder.Encode(data)
-}
+	srcFileName := srcFile.Name()
+	content := "copy test content"
+	if _, err := srcFile.WriteString(content); err != nil {
+		t.Fatalf("Failed to write to source file: %v", err)
+	}
+	srcFile.Close()
+	defer os.Remove(srcFileName)
 
-// copyFile copies a file from srcPath to destDir, ensuring that it does not overwrite existing files.
-func copyFile(srcPath, destDir string, fileInfo *FileInfo) error {
-	srcFile, err := os.Open(srcPath)
+	// Create temporary target directory.
+	targetDir, err := os.MkdirTemp("", "targetDir")
 	if err != nil {
-		return err
+		t.Fatalf("Failed to create temp target directory: %v", err)
 	}
-	defer srcFile.Close()
+	defer os.RemoveAll(targetDir)
 
-	filename := filepath.Base(srcPath)
-	destPath := filepath.Join(destDir, filename)
-	i := 1
-	for {
-		if _, err := os.Stat(destPath); os.IsNotExist(err) {
-			break
-		}
-		destPath = filepath.Join(destDir, fmt.Sprintf("%s(%d)%s",
-			strings.TrimSuffix(filename, filepath.Ext(filename)), i, filepath.Ext(filename)))
-		i++
+	// Create a dummy FileInfo for the source file.
+	fileInfo := &FileInfo{
+		Name: filepath.Base(srcFileName),
+		Path: srcFileName,
 	}
 
-	destFile, err := os.Create(destPath)
+	// Call copyFile.
+	if err := copyFile(srcFileName, targetDir, fileInfo); err != nil {
+		t.Fatalf("copyFile() error: %v", err)
+	}
+
+	// Verify that the file exists in the target directory.
+	destPath := filepath.Join(targetDir, filepath.Base(srcFileName))
+	data, err := os.ReadFile(destPath)
 	if err != nil {
-		return err
+		t.Fatalf("Failed to read destination file: %v", err)
 	}
-	defer destFile.Close()
-
-	if _, err := io.Copy(destFile, srcFile); err != nil {
-		return err
+	if string(data) != content {
+		t.Errorf("Copied file content = %q, want %q", string(data), content)
 	}
+}
 
-	info, err := srcFile.Stat()
+// TestGetFileTimes verifies that getFileTimes returns a modification time close to os.Stat()'s mod time.
+func TestGetFileTimes(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "testfile")
 	if err != nil {
-		return err
+		t.Fatalf("Failed to create temp file: %v", err)
 	}
+	tmpFileName := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpFileName)
 
-	if err := os.Chmod(destPath, info.Mode()); err != nil {
-		return err
-	}
-
-	atime, mtime, err := getFileTimes(srcPath)
+	accessTime, modTime, err := getFileTimes(tmpFileName)
 	if err != nil {
-		return err
+		t.Fatalf("getFileTimes() error: %v", err)
 	}
-	return os.Chtimes(destPath, atime, mtime)
-}
-
-// getFileTimes retrieves the access and modification times of the file at the given path.
-func getFileTimes(path string) (accessTime, modTime time.Time, err error) {
-	var stat unix.Stat_t
-	if err = unix.Stat(path, &stat); err != nil {
-		return
+	stat, err := os.Stat(tmpFileName)
+	if err != nil {
+		t.Fatalf("os.Stat() error: %v", err)
 	}
-	accessTime = time.Unix(int64(stat.Atim.Sec), int64(stat.Atim.Nsec))
-	modTime = time.Unix(int64(stat.Mtim.Sec), int64(stat.Mtim.Nsec))
-	return
-}
-
-// deleteFiles removes the parent file and all its duplicates.
-func deleteFiles(files []*FileInfo) error {
-	for _, fileInfo := range files {
-		if err := removeFile(fileInfo.Path); err != nil {
-			return fmt.Errorf("error deleting file %s: %v", fileInfo.Path, err)
-		}
-		for _, child := range fileInfo.Children {
-			if err := removeFile(child.Path); err != nil {
-				return fmt.Errorf("error deleting file %s: %v", child.Path, err)
-			}
-		}
+	expectedModTime := stat.ModTime()
+	// Allow a small delta between times.
+	if modTime.Sub(expectedModTime) > time.Second || expectedModTime.Sub(modTime) > time.Second {
+		t.Errorf("getFileTimes modTime = %v, want %v", modTime, expectedModTime)
 	}
-	logf("Source files deleted")
-	return nil
+	// While accessTime may vary by system, ensure it is not the zero value.
+	if accessTime.IsZero() {
+		t.Error("getFileTimes returned zero accessTime")
+	}
 }
 
-// removeFile wraps os.RemoveAll to delete a file or directory.
-func removeFile(path string) error {
-	return os.RemoveAll(path)
-}
+// TestDeleteFiles creates temporary files, deletes them via deleteFiles, and verifies they no longer exist.
+func TestDeleteFiles(t *testing.T) {
+	// Create temporary parent file.
+	parentFile, err := os.CreateTemp("", "parentfile")
+	if err != nil {
+		t.Fatalf("Failed to create parent file: %v", err)
+	}
+	parentFileName := parentFile.Name()
+	parentFile.Close()
+	// Create temporary child file.
+	childFile, err := os.CreateTemp("", "childfile")
+	if err != nil {
+		t.Fatalf("Failed to create child file: %v", err)
+	}
+	childFileName := childFile.Name()
+	childFile.Close()
 
-// logf prints log messages with a timestamp if logging is enabled.
-func logf(format string, args ...interface{}) {
-	if logEnabled {
-		prefix := time.Now().Format("2006-01-02 15:04:05")
-		fmt.Printf("%s: %s\n", prefix, fmt.Sprintf(format, args...))
+	files := []*FileInfo{
+		{
+			Path: parentFileName,
+			Children: []*FileInfo{
+				{Path: childFileName},
+			},
+		},
+	}
+
+	if err := deleteFiles(files); err != nil {
+		t.Fatalf("deleteFiles() error: %v", err)
+	}
+
+	if _, err := os.Stat(parentFileName); !os.IsNotExist(err) {
+		t.Errorf("Parent file %s still exists after deletion", parentFileName)
+	}
+	if _, err := os.Stat(childFileName); !os.IsNotExist(err) {
+		t.Errorf("Child file %s still exists after deletion", childFileName)
 	}
 }
