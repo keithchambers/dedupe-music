@@ -13,7 +13,7 @@ dedupe-music is a command-line tool for scanning directories to identify audio f
 
 ## Requirements
 
-- Go 1.16 or later
+- Go 1.23 or later
 - Access to the directories you wish to scan
 
 ## Installation
